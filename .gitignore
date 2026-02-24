@@ -1,0 +1,8 @@
+experiments/
+*.lp
+*.mps
+*.jsonl
+*.npz
+*.pt
+__pycache__/
+.venv/
