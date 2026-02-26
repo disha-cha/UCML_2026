@@ -1,0 +1,1 @@
+/usr/bin/c++  -Wno-psabi -O3 -DNDEBUG -rdynamic CMakeFiles/scipmip.dir/src/cppmain.cpp.o -o ../../bin/examples/scipmip  -Wl,-rpath,/home/disha/UCML_2026/scip-siruil/build/lib ../../lib/libscip.so.7.0.2.0 

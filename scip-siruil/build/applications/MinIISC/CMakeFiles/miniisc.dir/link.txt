@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -rdynamic CMakeFiles/miniisc.dir/src/benders.c.o CMakeFiles/miniisc.dir/src/miniisc.c.o CMakeFiles/miniisc.dir/src/readargs.c.o -o ../../bin/applications/miniisc  -Wl,-rpath,/home/disha/UCML_2026/scip-siruil/build/lib ../../lib/libscip.so.7.0.2.0 -lm 

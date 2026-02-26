@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -rdynamic CMakeFiles/string.dir/src/string.c.o -o ../../bin/examples/string  -Wl,-rpath,/home/disha/UCML_2026/scip-siruil/build/lib ../../lib/libscip.so.7.0.2.0 

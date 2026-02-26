@@ -1,0 +1,1 @@
+/usr/bin/c++  -Wno-psabi -O3 -DNDEBUG -rdynamic CMakeFiles/sudoku.dir/src/sudoku_main.cpp.o -o ../../bin/examples/sudoku  -Wl,-rpath,/home/disha/UCML_2026/scip-siruil/build/lib ../../lib/libscip.so.7.0.2.0 

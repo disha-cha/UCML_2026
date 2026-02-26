@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -rdynamic CMakeFiles/eventhdlr.dir/src/cmain.c.o CMakeFiles/eventhdlr.dir/src/event_bestsol.c.o CMakeFiles/eventhdlr.dir/src/event_boundwriting.c.o -o ../../bin/examples/eventhdlr  -Wl,-rpath,/home/disha/UCML_2026/scip-siruil/build/lib ../../lib/libscip.so.7.0.2.0 

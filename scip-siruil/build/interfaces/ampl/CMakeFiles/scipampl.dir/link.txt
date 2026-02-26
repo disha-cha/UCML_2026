@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -rdynamic CMakeFiles/scipampl.dir/src/cmain.c.o CMakeFiles/scipampl.dir/src/reader_nl.c.o -o ../../bin/interfaces/ampl/scipampl  -Wl,-rpath,/home/disha/UCML_2026/scip-siruil/build/lib ../../lib/libscip.so.7.0.2.0 /home/disha/UCML_2026/scip-siruil/interfaces/ampl/solvers/amplsolver.a -lm -ldl 
