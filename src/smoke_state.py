@@ -1,11 +1,15 @@
 from pyscipopt import Model
 from states import getState
 
-INSTANCE = "/mnt/c/Users/disha/OneDrive/Documents/instances/case118_S5_T24_seed1.lp"
+parser = argparse.ArgumentParser()
+parser.add_argument("--instance", type=str, required=True)
+args = parser.parse_args()
+
+INSTANCE = Path(args.instance).expanduser().resolve()
 
 m = Model()
 m.hideOutput(True)
-m.readProblem(INSTANCE)
+m.readProblem(str(INSTANCE))
 
 # tiny run, but ensure separation actually happens
 m.setIntParam("separating/maxroundsroot", 2)
