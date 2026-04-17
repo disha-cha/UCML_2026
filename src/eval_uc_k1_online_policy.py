@@ -256,6 +256,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--uc-features-npz", required=True)
+    ap.add_argument("--lp-features-npz", default=None, help="Optional LP features to concatenate (same format as uc_features.npz)")
     ap.add_argument("--model-pt", required=True)
     ap.add_argument("--classes", required=True, help="Comma-separated classes in SAME order as training")
     ap.add_argument("--baseline-config", required=True)
@@ -278,6 +279,17 @@ def main():
     manifest = _load_manifest(args.manifest)
 
     feats_by_name, mu_npz, sd_npz = _load_uc_features_npz(args.uc_features_npz)
+
+    # Merge LP features if provided
+    if args.lp_features_npz:
+        lp_feats_by_name, _, _ = _load_uc_features_npz(args.lp_features_npz)
+        common = set(feats_by_name.keys()) & set(lp_feats_by_name.keys())
+        feats_by_name = {k: np.concatenate([feats_by_name[k], lp_feats_by_name[k]]) for k in common}
+        # Recompute normalization stats from merged features
+        merged = np.stack(list(feats_by_name.values()), axis=0).astype(np.float32)
+        mu_npz = merged.mean(axis=0)
+        sd_npz = merged.std(axis=0) + 1e-8
+
     train_stats = _load_train_stats_if_present(args.model_pt)
     if train_stats is not None:
         mu, sd = train_stats
@@ -292,12 +304,14 @@ def main():
         raise RuntimeError(f"baseline-config '{args.baseline_config}' not found in results.jsonl configs.")
 
     # Build pool of (inst_key, lp_path) that exist in uc_features
+    inst_dir = Path(args.manifest).parent
     pool: List[Tuple[str, str]] = []
     for e in manifest:
         lp_path = e.get("lp_path") or e.get("path") or e.get("lp") or e.get("file")
         inst_name = e.get("instance_name") or e.get("name") or (Path(lp_path).stem if lp_path else None)
         if not lp_path or not inst_name:
             continue
+        lp_path = str(inst_dir / lp_path)
         inst_key = _norm_inst_name(inst_name)
         if inst_key in feats_by_name:
             pool.append((inst_key, lp_path))

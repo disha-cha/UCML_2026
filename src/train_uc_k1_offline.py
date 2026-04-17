@@ -281,6 +281,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--results-csv", required=True)
     p.add_argument("--uc-features-npz", required=True)
+    p.add_argument("--lp-features-npz", default=None, help="Optional LP-based features to concatenate")
     p.add_argument("--outdir", required=True)
     p.add_argument("--subset-a", required=True, help="Comma-separated config_name strings (must match results.csv)")
     p.add_argument("--baseline-config", default="all_off", help="config used as baseline for delta")
@@ -304,6 +305,13 @@ def main():
 
     df = pd.read_csv(args.results_csv)
     feat_map, feat_names = load_uc_features(args.uc_features_npz)
+
+    if args.lp_features_npz:
+        lp_feat_map, lp_feat_names = load_uc_features(args.lp_features_npz)
+        common = set(feat_map.keys()) & set(lp_feat_map.keys())
+        feat_map = {k: np.concatenate([feat_map[k], lp_feat_map[k]]) for k in common}
+        feat_names = feat_names + lp_feat_names
+        print(f"Merged UC + LP features: {len(feat_names)} total features, {len(common)} instances matched")
 
     assembled = assemble_table(df, feat_map, subset_a, baseline_config=args.baseline_config)
     assembled.to_csv(outdir / "dataset_all_rows.csv", index=False)

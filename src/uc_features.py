@@ -327,7 +327,9 @@ if __name__ == "__main__":
     parser.add_argument("--input-dir", required=True, help="Directory containing .minud.json files")
     parser.add_argument("--output", required=True, help="Output .npz file path")
     args = parser.parse_args()
-
+    
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    
     sidecar_files = sorted(glob.glob(str(Path(args.input_dir) / "*.minud.json")))
     print(f"Found {len(sidecar_files)} sidecar files")
 

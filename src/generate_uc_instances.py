@@ -7,7 +7,7 @@ Stochastic (2-stage) copper-plate UC instance generator for L2Sep experiments.
 Key properties (correct UC, no fake transmission):
 - First-stage binaries shared across scenarios: u, v, w
 - Second-stage dispatch/reserve per scenario: p, r
-- Correct startup/shutdown transition with initial conditions u0, p0
+- Correct startup/shutdown transition with initial conditions u0
 - Correct min up/down using robust "windowed-on/off" constraints
 - Correct reserve coupling: p + r <= Pmax * u
 - Ramp constraints include t=1 using initial p0
@@ -19,7 +19,7 @@ Outputs:
 - .minud.json sidecar with UC-specific metadata (+ feasibility + slack_summary if screened)
 
 NOTE:
-- This file uses pandapower only for network sizing + load distribution, but the UC model
+- This file keeps pandapower network loading for sizing + load distribution, but the UC model
   is copper-plate (no PTDF/angles/zones). Do not claim SCUC.
 """
 
@@ -138,7 +138,8 @@ def generate_uc_data(
     p["Ton"] = {g: random.randint(3, 6) for g in G}
     p["Toff"] = {g: random.randint(3, 6) for g in G}
 
-    # ---- Initial conditions (reduces early-hour ramp infeasibility) ----
+    # ---- Initial conditions (helps avoid early-hour ramp infeasibility) ----
+    # Bring enough capacity online at t=0 to cover a fraction of typical demand.
     sorted_g = sorted(G, key=lambda g: Pmax[g], reverse=True)
     typical_load = target_utilization * total_capacity * 0.9
 
@@ -149,8 +150,8 @@ def generate_uc_data(
     for g in sorted_g:
         if cap_online < typical_load:
             u0[g] = 1
-            p0[g] = float(Pmin[g])  # safe initial dispatch
-            cap_online += float(Pmax[g])
+            p0[g] = Pmin[g]  # safe initial dispatch
+            cap_online += Pmax[g]
         else:
             break
 
@@ -177,7 +178,7 @@ def generate_uc_data(
     for n in N:
         bus_load_base[n] *= scale
 
-    # pattern that starts low; peaks later
+    # pattern that starts low to reduce early-hour ramp stress; peaks later
     raw = np.sin(np.linspace(-np.pi / 2, 3 * np.pi / 2, time_periods))  # starts low
     time_pattern = 0.65 + 0.45 * (raw + 1) / 2  # in [0.65, 1.10]
 
@@ -269,7 +270,7 @@ def build_uc_model(n_gen: int, n_buses: int, time_periods: int, n_scenarios: int
     m.p = Var(m.G, m.T, m.S, within=NonNegativeReals)  # dispatch
     m.r = Var(m.G, m.T, m.S, within=NonNegativeReals)  # reserve
 
-    # Slack variables (penalized heavily; used for filtering)
+    # Slack variables (only for feasibility / filtering; penalized heavily)
     m.load_shed = Var(m.S, m.T, within=NonNegativeReals)  # unmet demand
     m.spill = Var(m.S, m.T, within=NonNegativeReals)      # dumped generation
     m.res_short = Var(m.S, m.T, within=NonNegativeReals)  # reserve shortfall
@@ -283,7 +284,7 @@ def build_uc_model(n_gen: int, n_buses: int, time_periods: int, n_scenarios: int
         return m.p[g, t, s] <= m.Pmax[g] * m.u[g, t]
     m.gen_max = Constraint(m.G, m.T, m.S, rule=gen_max_rule)
 
-    # (2) Reserve coupling
+    # (2) Reserve: must come from headroom
     def gen_reserve_joint_rule(m, g, t, s):
         return m.p[g, t, s] + m.r[g, t, s] <= m.Pmax[g] * m.u[g, t]
     m.gen_reserve_joint = Constraint(m.G, m.T, m.S, rule=gen_reserve_joint_rule)
@@ -343,7 +344,7 @@ def build_uc_model(n_gen: int, n_buses: int, time_periods: int, n_scenarios: int
         return m.w[g, t] <= 1 - m.u[g, t]
     m.shutdown_upper2 = Constraint(m.G, m.T, rule=shutdown_upper2)
 
-    # (7) Min up/down time constraints (horizon-safe)
+    # (7) Correct min up/down time constraints (robust, horizon-safe)
     def min_up_rule(m, g, t):
         L = int(m.Ton[g])
         if L <= 1:
@@ -367,9 +368,9 @@ def build_uc_model(n_gen: int, n_buses: int, time_periods: int, n_scenarios: int
         op_cost = sum(m.Prob[s] * m.OpEx[g] * m.p[g, t, s] for s in m.S for g in m.G for t in m.T)
         commit_cost = sum(m.Csu[g] * m.v[g, t] + m.Csd[g] * m.w[g, t] for g in m.G for t in m.T)
 
-        VOLL = 1e6       # value of lost load
-        SPILL_PEN = 1e3  # discourage dumping but far less than shedding
-        RES_SHORT = 1e5  # reserve shortfall penalty
+        VOLL = 1e6      # value of lost load
+        SPILL_PEN = 1e3 # discourage dumping but far less than shedding
+        RES_SHORT = 1e5 # reserve shortfall penalty
 
         slack_cost = sum(
             m.Prob[s] * (VOLL * m.load_shed[s, t] + SPILL_PEN * m.spill[s, t] + RES_SHORT * m.res_short[s, t])
@@ -384,43 +385,62 @@ def build_uc_model(n_gen: int, n_buses: int, time_periods: int, n_scenarios: int
 # -----------------------------------------------------------------------------
 # Solve Helpers
 # -----------------------------------------------------------------------------
-
-def try_solve_feasibility(instance: pyo.ConcreteModel, time_limit_s: int = 30) -> Optional[Dict[str, Any]]:
+def try_solve_feasibility(instance: pyo.ConcreteModel, time_limit_s: int = 30):
     """
-    Try to solve the instance if a solver is available.
-
-    Prefers: scip, gurobi, cbc, highs, glpk.
-    IMPORTANT: We do NOT require optimality for screening; we mainly want a feasible incumbent.
+    Use PySCIPOpt directly. Returns dict with status AND slack totals read from SCIP solution.
     """
-    candidates = ["scip", "gurobi", "cbc", "highs", "glpk"]
-    for name in candidates:
-        try:
-            solver = pyo.SolverFactory(name)
-            if solver is None or not solver.available():
-                continue
+    import tempfile, os
+    from pyscipopt import Model as SCIPModel
 
+    fd, tmp_lp = tempfile.mkstemp(suffix=".lp")
+    os.close(fd)
+    try:
+        instance.write(tmp_lp)
+        m = SCIPModel()
+        m.setParam("limits/time", float(time_limit_s))
+        m.setParam("limits/gap", 0.05)
+        m.setParam("display/verblevel", 0)
+        m.readProblem(tmp_lp)
+        m.optimize()
+        status = m.getStatus()
+        print(f"[screen] PySCIPOpt status: {status}")
+
+        # Try to read slack values directly from SCIP solution
+        if status in ("optimal", "gaplimit", "timelimit"):
             try:
-                if name == "scip":
-                    solver.options["limits/time"] = time_limit_s
-                elif name == "gurobi":
-                    solver.options["TimeLimit"] = time_limit_s
-                elif name == "cbc":
-                    solver.options["seconds"] = time_limit_s
-                elif name == "highs":
-                    solver.options["time_limit"] = time_limit_s
-                elif name == "glpk":
-                    solver.options["tmlim"] = time_limit_s
-            except Exception:
-                pass
-
-            res = solver.solve(instance, tee=False)
-            term = str(res.solver.termination_condition)
-            status = str(res.solver.status)
-            return {"solver": name, "status": status, "termination": term}
+                total_shed = 0.0
+                total_spill = 0.0
+                total_res_short = 0.0
+                for var in m.getVars():
+                    name = var.name
+                    val = m.getVal(var)
+                    if name.startswith("load_shed"):
+                        total_shed += val
+                    elif name.startswith("spill"):
+                        total_spill += val
+                    elif name.startswith("res_short"):
+                        total_res_short += val
+                return {
+                    "solver": "pyscipopt",
+                    "status": status,
+                    "slack_summary": {
+                        "load_shed": float(total_shed),
+                        "spill": float(total_spill),
+                        "reserve_short": float(total_res_short),
+                    }
+                }
+            except Exception as e:
+                print(f"[screen] Could not read slack values: {repr(e)}")
+                return {"solver": "pyscipopt", "status": status}
+        return {"solver": "pyscipopt", "status": status}
+    except Exception as e:
+        print(f"[screen] PySCIPOpt failed: {repr(e)}")
+        return None
+    finally:
+        try:
+            os.remove(tmp_lp)
         except Exception:
-            continue
-    return None
-
+            pass
 
 def _safe_value(x) -> Optional[float]:
     """Return float value of a Pyomo expression/var, or None if unavailable."""
@@ -444,7 +464,7 @@ def generate_instance(
     seed: Optional[int] = None,
     out_dir: str = "instances",
     screen_feasibility: bool = False,
-    screen_time_limit_s: int = 60,
+    screen_time_limit_s: int = 30,
 ) -> Tuple[str, str]:
     net = load_network(case_name)
 
@@ -465,51 +485,23 @@ def generate_instance(
     abstract_model = build_uc_model(n_gen, n_buses, time_periods, n_scenarios)
     instance = abstract_model.create_instance(pyomo_data)
 
-    # Optional feasibility screen (records slack even if time-limited)
+    # Optional feasibility screen
     solve_info = None
     if screen_feasibility:
-        solve_info = try_solve_feasibility(instance, time_limit_s=screen_time_limit_s)
-        metadata["feasibility_screen"] = solve_info or {"note": "No solver available / not solved."}
+            solve_info = try_solve_feasibility(instance, time_limit_s=screen_time_limit_s)
+            metadata["feasibility_screen"] = solve_info or {"note": "No solver available."}
 
-        metadata["has_solution"] = False
-        vals_present = True
-        total_shed = 0.0
-        total_spill = 0.0
-        total_res_short = 0.0
-
-        if solve_info is not None and solve_info.get("status") in ("ok", "warning"):
-            for s in instance.S:
-                for t in instance.T:
-                    v1 = _safe_value(instance.load_shed[s, t])
-                    v2 = _safe_value(instance.spill[s, t])
-                    v3 = _safe_value(instance.res_short[s, t])
-                    if v1 is None or v2 is None or v3 is None:
-                        vals_present = False
-                        break
-                    total_shed += v1
-                    total_spill += v2
-                    total_res_short += v3
-                if not vals_present:
-                    break
-        else:
-            vals_present = False
-
-        if vals_present:
-            metadata["has_solution"] = True
-            metadata["slack_summary"] = {
-                "load_shed": float(total_shed),
-                "spill": float(total_spill),
-                "reserve_short": float(total_res_short),
-            }
-            print("Slack diagnostics:")
-            print("  Load shed:", total_shed)
-            print("  Spill:", total_spill)
-            print("  Reserve short:", total_res_short)
-        else:
-            metadata["slack_summary_note"] = (
-                "No incumbent values available (solver may have timed out before finding feasible solution)."
-            )
-
+            # Read slack directly from solve_info (not from Pyomo instance)
+            if solve_info and "slack_summary" in solve_info:
+                metadata["slack_summary"] = solve_info["slack_summary"]
+                slack = solve_info["slack_summary"]
+                print("Slack diagnostics:")
+                print("  Load shed:", slack["load_shed"])
+                print("  Spill:", slack["spill"])
+                print("  Reserve short:", slack["reserve_short"])
+            else:
+                metadata["slack_summary_note"] = "No incumbent values available."
+    
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -555,10 +547,7 @@ def generate_dataset(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    def clamp0(x: float, tol: float = 1e-9) -> float:
-        return 0.0 if abs(x) <= tol else x
-
-    manifest: List[Dict[str, Any]] = []
+    manifest = []
     for case in cases:
         accepted = 0
         attempts = 0
@@ -574,8 +563,6 @@ def generate_dataset(
                 )
 
             seed = accepted * 100000 + attempts
-            print(f"\n[{case}] attempt {attempts} (accepted {accepted}/{n_per_case}), seed={seed}")
-
             lp, sidecar = generate_instance(
                 case_name=case,
                 n_scenarios=scenarios,
@@ -592,7 +579,9 @@ def generate_dataset(
 
             slack = meta.get("slack_summary", None)
             if slack is None:
-                print("  ❌ rejected (missing slack_summary; no readable incumbent recorded)")
+                # no incumbent -> reject
+                print("  ❌ rejected (no slack_summary; no incumbent found)")
+                # delete files
                 try:
                     Path(lp).unlink(missing_ok=True)
                     Path(sidecar).unlink(missing_ok=True)
@@ -600,8 +589,8 @@ def generate_dataset(
                     pass
                 continue
 
-            shed = clamp0(float(slack.get("load_shed", 1e99)))
-            rshort = clamp0(float(slack.get("reserve_short", 1e99)))
+            shed = float(slack.get("load_shed", 1e99))
+            rshort = float(slack.get("reserve_short", 1e99))
 
             if abs(shed) <= eps and abs(rshort) <= eps:
                 print(f"  ✅ accepted (shed={shed:.3e}, rshort={rshort:.3e})")
@@ -625,7 +614,6 @@ def generate_dataset(
     manifest_path = out_path / "manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
-
     print(f"\nManifest saved to {manifest_path}")
     print(f"Total accepted instances: {len(manifest)}")
 
@@ -681,7 +669,7 @@ def main():
         parser.print_help()
         print("\nExamples:")
         print("  python generate_uc_instances.py --case case118 --scenarios 5 --time-periods 24 --seed 1 --screen-feasibility --screen-time-limit 60")
-        print("  python generate_uc_instances.py --dataset --cases case57 case118 case300 --n-per-case 60 --scenarios 5 --time-periods 24 --screen-time-limit 60")
+        print("  python generate_uc_instances.py --dataset --cases case57 case118 case300 --n-per-case 10 --scenarios 5 --time-periods 24 --screen-time-limit 60")
         return
 
     generate_instance(

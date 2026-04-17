@@ -6,19 +6,15 @@ Run SCIP on UC instances under a small, fixed configuration set A (size = 10),
 and record reward = solve_time_sec.
 
 Writes:
-  outputs_step3_collect_time/
+  experiments/step3_collect_time/
     configs.json
     results.csv
     results.jsonl
 
-Usage (WSL):
-  source /mnt/c/Users/disha/OneDrive/Documents/l2sep_scip/PySCIPOpt-siruil/.venv/bin/activate
-  export SCIP_PREFIX=$HOME/scipopt
-  export LD_LIBRARY_PATH="$SCIP_PREFIX/lib:$LD_LIBRARY_PATH"
-
-  python collect_uc_times.py \
-    --manifest "/mnt/c/Users/disha/OneDrive/Documents/instances/manifest.json" \
-    --outdir "outputs_step3_collect_time" \
+Usage:
+  python src/collect_uc_times.py \
+    --manifest data/instances/manifest.json \
+    --outdir experiments/step3_collect_time \
     --time-limit 300 \
     --seed 0
 """
@@ -64,6 +60,7 @@ def cfg_vector(**on: int) -> Dict[str, int]:
 
 
 CONFIGS: List[Dict[str, Any]] = [
+    # ---- Baselines ----
     {
         "config_id": 0,
         "name": "all_on",
@@ -74,48 +71,114 @@ CONFIGS: List[Dict[str, Any]] = [
         "name": "all_off",
         "sepa_freq": {s: 0 for s in SEPAS},
     },
+
+    # ---- Single separator configs ----
     {
         "config_id": 2,
-        "name": "gomory_cmir",
-        "sepa_freq": cfg_vector(gomory=1, cmir=1),
+        "name": "gomory_only",
+        "sepa_freq": cfg_vector(gomory=1),
     },
     {
         "config_id": 3,
+        "name": "cmir_only",
+        "sepa_freq": cfg_vector(cmir=1),
+    },
+    {
+        "config_id": 4,
         "name": "clique_only",
         "sepa_freq": cfg_vector(clique=1),
     },
     {
-        "config_id": 4,
+        "config_id": 5,
         "name": "flowcover_only",
         "sepa_freq": cfg_vector(flowcover=1),
     },
     {
-        "config_id": 5,
+        "config_id": 6,
         "name": "zerohalf_only",
         "sepa_freq": cfg_vector(zerohalf=1),
     },
     {
-        "config_id": 6,
+        "config_id": 7,
         "name": "strongcg_only",
         "sepa_freq": cfg_vector(strongcg=1),
     },
     {
-        "config_id": 7,
+        "config_id": 8,
         "name": "impliedbounds_only",
         "sepa_freq": cfg_vector(impliedbounds=1),
     },
     {
-        "config_id": 8,
+        "config_id": 9,
+        "name": "aggregation_only",
+        "sepa_freq": cfg_vector(aggregation=1),
+    },
+
+    # ---- UC-motivated pairs ----
+    # Binary structure (on/off vars) -> clique + zerohalf
+    {
+        "config_id": 10,
+        "name": "binary_structure",
+        "sepa_freq": cfg_vector(clique=1, zerohalf=1),
+    },
+    # Temporal coupling (ramp/minupdown) -> cmir + impliedbounds
+    {
+        "config_id": 11,
+        "name": "temporal_coupling",
+        "sepa_freq": cfg_vector(cmir=1, impliedbounds=1),
+    },
+    # Strong cuts for LP relaxation tightening
+    {
+        "config_id": 12,
+        "name": "strong_cuts",
+        "sepa_freq": cfg_vector(gomory=1, strongcg=1),
+    },
+    # Flow-like (power dispatch variables)
+    {
+        "config_id": 13,
+        "name": "flow_based",
+        "sepa_freq": cfg_vector(flowcover=1, aggregation=1),
+    },
+
+    # ---- Balanced mixes ----
+    {
+        "config_id": 14,
         "name": "mix_balanced",
         "sepa_freq": cfg_vector(clique=1, flowcover=1, impliedbounds=1, aggregation=1),
     },
     {
-        "config_id": 9,
+        "config_id": 15,
         "name": "mix_aggressive",
         "sepa_freq": cfg_vector(gomory=1, cmir=1, strongcg=1, zerohalf=1),
     },
-]
+    {
+        "config_id": 16,
+        "name": "mix_uc_motivated",
+        "sepa_freq": cfg_vector(cmir=1, clique=1, impliedbounds=1, zerohalf=1),
+    },
 
+    # ---- Larger combos ----
+    # Everything except gomory (avoid redundancy with strongcg)
+    {
+        "config_id": 17,
+        "name": "no_gomory",
+        "sepa_freq": cfg_vector(cmir=1, clique=1, flowcover=1, zerohalf=1,
+                                strongcg=1, aggregation=1, impliedbounds=1),
+    },
+    # Everything except clique (test binary cut importance)
+    {
+        "config_id": 18,
+        "name": "no_clique",
+        "sepa_freq": cfg_vector(gomory=1, cmir=1, flowcover=1, zerohalf=1,
+                                strongcg=1, aggregation=1, impliedbounds=1),
+    },
+    # Gomory family only (all general-purpose cuts, no structural ones)
+    {
+        "config_id": 19,
+        "name": "gomory_family",
+        "sepa_freq": cfg_vector(gomory=1, strongcg=1, cmir=1, aggregation=1),
+    },
+]
 
 # -----------------------------
 # Helpers
@@ -230,7 +293,7 @@ def main():
     ap.add_argument("--max-instances", type=int, default=None, help="Optional cap for quick debugging")
     args = ap.parse_args()
 
-    manifest_path = Path(windows_to_wsl_path(args.manifest))
+    manifest_path = Path(args.manifest)
     if not manifest_path.exists():
         raise FileNotFoundError(f"manifest not found: {manifest_path}")
 
